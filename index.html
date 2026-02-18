@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>Aozora Reader (Simple)</title>
+  <title>Bluesongs Reader</title>
   <style>
     :root{
       --bg:#ffffff; --fg:#111; --muted:#666; --bar:#f4f4f4; --border:#e5e5e5;
       --fontSize: 18px;
       --lineHeight: 1.9;
       --contentWidth: 42em;
+      --fontFamily: -apple-system, system-ui, "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
     }
     [data-theme="dark"]{
       --bg:#0f1115; --fg:#eaeef5; --muted:#a9b2c3; --bar:#161a22; --border:#2a3140;
@@ -17,19 +18,36 @@
     html,body{height:100%}
     body{
       margin:0; background:var(--bg); color:var(--fg);
-      font-family: -apple-system, system-ui, "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+      font-family: var(--fontFamily);
     }
 
-    header{
+    /* 折りたたみ設定バー */
+    details#controls{
       position: sticky; top:0; z-index:10;
-      background:var(--bar); border-bottom:1px solid var(--border);
+      background:var(--bar);
+      border-bottom:1px solid var(--border);
+    }
+    details#controls > summary{
+      list-style:none;
+      cursor:pointer;
       padding:10px max(12px, env(safe-area-inset-left)) 10px max(12px, env(safe-area-inset-right));
+      display:flex; gap:10px; align-items:center;
+      user-select:none;
+    }
+    details#controls > summary::-webkit-details-marker{ display:none; }
+    .summaryTitle{ font-weight:700; white-space:nowrap; }
+    .summaryNow{
+      color:var(--muted); font-size:12px; flex:1;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+    .summaryHint{ color:var(--muted); font-size:12px; white-space:nowrap; }
+
+    .controlsInner{
+      padding: 0 max(12px, env(safe-area-inset-left)) 12px max(12px, env(safe-area-inset-right));
       display:flex; gap:10px; align-items:center; flex-wrap:wrap;
     }
-    header .group{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
-    button, select, input[type="file"]{
-      font: inherit;
-    }
+    .group{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+    button, select, input[type="file"]{ font: inherit; }
     button, select{
       border:1px solid var(--border);
       background:var(--bg);
@@ -41,11 +59,13 @@
     button:active{transform: translateY(1px)}
     .hint{color:var(--muted); font-size:12px}
 
+    /* 本文領域 */
     main{
       height: calc(100% - 0px);
       overflow:auto;
       -webkit-overflow-scrolling: touch;
       padding: 18px 14px 40px 14px;
+      overscroll-behavior: contain;
     }
     .paper{
       margin: 0 auto;
@@ -68,44 +88,74 @@
       padding:18px;
     }
 
-    /* 縦書き */
+    /* 縦書き：横スクロールで列送りできるようにする */
+    [data-writing="vertical"] main{
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 18px 10px 24px 10px;
+      scroll-snap-type: x mandatory;      /* 列送りを“ページっぽく” */
+      scroll-behavior: smooth;
+    }
     [data-writing="vertical"] .paper{
       writing-mode: vertical-rl;
       text-orientation: mixed;
+      /* 重要：高さを画面に合わせる→下端で折り返して次の列へ */
+      height: calc(100vh - 64px); /* summary+paddingぶんの雑な見積もり。JSで後で微調整 */
+      width: max-content;
       max-width: none;
-      width: min(92vw, 46em);
-      margin: 0 auto;
+      margin: 0;
+      padding-inline: 10px;
+    }
+    [data-writing="vertical"] .paper > *{
+      scroll-snap-align: start;
     }
     [data-writing="vertical"] p{margin: 0 0 1.2em 0;}
   </style>
 </head>
 <body data-theme="light" data-writing="horizontal">
-  <header>
-    <div class="group">
-      <input id="file" type="file" accept=".txt,.text,.html,.htm" />
-      <select id="encoding">
-        <option value="utf-8">UTF-8</option>
-        <option value="shift_jis">Shift_JIS</option>
-      </select>
-      <span class="hint">青空文庫txtはShift_JISが多い</span>
-    </div>
+  <details id="controls">
+    <summary>
+      <span class="summaryTitle">⚙︎ 設定</span>
+      <span class="summaryNow" id="nowReading">未読</span>
+      <span class="summaryHint" id="openHint">▼</span>
+    </summary>
 
-    <div class="group">
-      <button id="smaller">A-</button>
-      <button id="bigger">A+</button>
-      <button id="lhDown">行間-</button>
-      <button id="lhUp">行間+</button>
-      <button id="theme">🌙/☀️</button>
-      <button id="writing">縦/横</button>
-      <button id="reset">リセット</button>
+    <div class="controlsInner">
+      <div class="group">
+        <input id="file" type="file" accept=".txt,.text,.html,.htm" />
+        <select id="encoding" title="文字コード">
+          <!-- 初期設定：Shift_JIS（valueは shift-jis が安定） -->
+          <option value="shift-jis">Shift_JIS</option>
+          <option value="utf-8">UTF-8</option>
+        </select>
+
+        <select id="font" title="フォント">
+          <option value="mincho">明朝（おすすめ）</option>
+          <option value="gothic">ゴシック</option>
+          <option value="serif">Serif（汎用）</option>
+        </select>
+
+        <span class="hint">青空文庫txtはShift_JISが多い</span>
+      </div>
+
+      <div class="group">
+        <button id="smaller">A-</button>
+        <button id="bigger">A+</button>
+        <button id="lhDown">行間-</button>
+        <button id="lhUp">行間+</button>
+        <button id="theme">🌙/☀️</button>
+        <button id="writing">縦/横</button>
+        <button id="resetView">表示リセット</button>
+        <button id="resetLoad" title="読み込み状態をクリア">読み込みリセット</button>
+      </div>
     </div>
-  </header>
+  </details>
 
   <main id="scroller">
     <div class="paper" id="paper">
       <div class="empty">
-        <div style="font-weight:700; margin-bottom:6px;">Aozora Reader</div>
-        <div>上の「ファイル選択」から青空文庫のテキスト（.txt）を選ぶと、ルビを再現して読めるよ。</div>
+        <div style="font-weight:700; margin-bottom:6px;">Bluesongs Reader</div>
+        <div>「設定」→ ファイルを選ぶと、青空文庫のルビ付きテキストを読書アプリっぽく読めるよ。</div>
         <div style="margin-top:10px;" class="hint">ルビ記法例：｜漢字《かんじ》</div>
       </div>
     </div>
@@ -114,22 +164,35 @@
 <script>
 (() => {
   const el = (id) => document.getElementById(id);
+
+  const controls = el("controls");
+  const nowReading = el("nowReading");
+  const openHint = el("openHint");
+
   const fileInput = el("file");
   const encodingSel = el("encoding");
+  const fontSel = el("font");
+
   const paper = el("paper");
   const scroller = el("scroller");
 
-  const settingsKey = "aozora_reader_settings_v1";
+  const settingsKey = "bluesongs_reader_settings_v3";
+
+  // ★読み込み済みのバイト列を保持（エンコード変更で再デコードできるように）
+  let lastFileBuf = null;     // ArrayBuffer
+  let lastFileMeta = null;    // {name,size,lastModified}
+  let lastDocId = null;
+  let lastTitle = null;
+
   const state = {
     theme: "light",
     writing: "horizontal",
     fontSize: 18,
     lineHeight: 1.9,
-    lastDocId: null,
-    lastScrollRatio: 0
+    encoding: "shift-jis",   // ★初期：Shift_JIS
+    font: "mincho"           // ★初期：明朝
   };
 
-  // ---- utils
   function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
   function escapeHtml(s){
     return s.replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
@@ -137,21 +200,29 @@
   function setCssVars(){
     document.documentElement.style.setProperty("--fontSize", state.fontSize + "px");
     document.documentElement.style.setProperty("--lineHeight", state.lineHeight);
+
+    // フォント
+    const stacks = {
+      mincho: `"Hiragino Mincho ProN","YuMincho","Noto Serif JP","Hiragino Mincho Pro",serif`,
+      gothic: `-apple-system, system-ui, "Hiragino Kaku Gothic ProN","Yu Gothic","Noto Sans JP",sans-serif`,
+      serif: `ui-serif, "Times New Roman", Times, serif`
+    };
+    document.documentElement.style.setProperty("--fontFamily", stacks[state.font] || stacks.mincho);
   }
-  function applyTheme(){
-    document.body.dataset.theme = state.theme;
-  }
+  function applyTheme(){ document.body.dataset.theme = state.theme; }
   function applyWriting(){
     document.body.dataset.writing = state.writing;
-  }
-
-  function loadSettings(){
-    try{
-      const raw = localStorage.getItem(settingsKey);
-      if(!raw) return;
-      const x = JSON.parse(raw);
-      Object.assign(state, x);
-    }catch(e){}
+    // 縦書きの高さを、実際の設定バーの高さに合わせて調整（より“画面いっぱいで折り返し”）
+    if(state.writing === "vertical"){
+      requestAnimationFrame(() => {
+        const controlsH = controls.getBoundingClientRect().height;
+        const pad = 18; // main paddingの雰囲気分
+        const h = Math.max(240, window.innerHeight - controlsH - pad);
+        paper.style.height = h + "px";
+      });
+    } else {
+      paper.style.height = "";
+    }
   }
   function saveSettings(){
     localStorage.setItem(settingsKey, JSON.stringify({
@@ -159,14 +230,30 @@
       writing: state.writing,
       fontSize: state.fontSize,
       lineHeight: state.lineHeight,
-      lastDocId: state.lastDocId,
-      lastScrollRatio: state.lastScrollRatio
+      encoding: state.encoding,
+      font: state.font,
+      lastDocId,
+      lastTitle
     }));
   }
+  function loadSettings(){
+    try{
+      const raw = localStorage.getItem(settingsKey);
+      if(!raw) return;
+      const x = JSON.parse(raw);
+      Object.assign(state, x);
+      // lastDocId/lastTitle は stateではなく外側で管理
+      if(x.lastDocId) lastDocId = x.lastDocId;
+      if(x.lastTitle) lastTitle = x.lastTitle;
+    }catch(e){}
+  }
 
-  // ---- Aozora txt -> HTML (最低限)
+  function refreshNowReading(){
+    nowReading.textContent = lastTitle ? lastTitle : "未読";
+  }
+
+  // ---- Aozora txt -> HTML（最低限）
   function stripAozoraHeader(text){
-    // 青空txtはタイトル/著者/注意書き + 罫線で区切られて本文、が多い
     const lines = text.replace(/\r\n/g,"\n").split("\n");
     const ruleIdx = [];
     for(let i=0;i<lines.length;i++){
@@ -180,63 +267,54 @@
   }
 
   function aozoraToHtml(txt){
-    let t = txt;
-    t = stripAozoraHeader(t);
-
-    // まずHTMLエスケープ
+    let t = stripAozoraHeader(txt);
     t = escapeHtml(t);
 
-    // 代表的な注記（※［＃...］）は消す（完全対応は大変なのでMVPは割り切り）
+    // 注記（※［＃...］）を軽く除去
     t = t.replace(/※［＃[^］]*］/g, "");
     t = t.replace(/［＃[^］]*］/g, "");
 
-    // 強調（《《強調》》）を太字に（簡易）
+    // 強調（《《強調》》）
     t = t.replace(/《《(.+?)》》/g, "<strong>$1</strong>");
 
     // ルビ：｜基底《ルビ》
-    t = t.replace(/｜([^《\n]+)《([^》\n]+)》/g,
-      `<ruby><rb>$1</rb><rt>$2</rt></ruby>`);
+    t = t.replace(/｜([^《\n]+)《([^》\n]+)》/g, `<ruby><rb>$1</rb><rt>$2</rt></ruby>`);
 
-    // ルビ（バー無し）の簡易対応：漢字列《よみ》
-    // ※誤変換の可能性があるので控えめに：漢字っぽい連続だけ
-    t = t.replace(/([一-龥々〆ヵヶ]{1,20})《([^》\n]+)》/g,
-      `<ruby><rb>$1</rb><rt>$2</rt></ruby>`);
+    // バー無し簡易：漢字列《よみ》
+    t = t.replace(/([一-龥々〆ヵヶ]{1,20})《([^》\n]+)》/g, `<ruby><rb>$1</rb><rt>$2</rt></ruby>`);
 
-    // 段落化：空行で区切る
     const blocks = t.split(/\n{2,}/).map(b => b.trim()).filter(Boolean);
-    const html = blocks.map(b => `<p>${b.replace(/\n/g,"<br>")}</p>`).join("\n");
-    return html;
+    return blocks.map(b => `<p>${b.replace(/\n/g,"<br>")}</p>`).join("\n");
   }
 
-  function readFileAsText(file, encoding){
-    return new Promise((resolve, reject) => {
-      const fr = new FileReader();
-      fr.onerror = () => reject(fr.error);
-      fr.onload = () => resolve(fr.result);
-      try{
-        fr.readAsText(file, encoding);
-      }catch(e){
-        // encoding指定が効かない環境向け
-        fr.readAsText(file);
-      }
-    });
+  function docIdFromMeta(meta){
+    return `${meta.name}__${meta.size}__${meta.lastModified}`;
   }
 
-  function docIdFromFile(file){
-    return `${file.name}__${file.size}__${file.lastModified}`;
+  function getScrollRatio(){
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    return max > 0 ? (scroller.scrollTop / max) : 0;
+  }
+  function setScrollRatio(ratio){
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    scroller.scrollTop = Math.floor(max * clamp(ratio, 0, 1));
   }
 
-  async function openFile(file){
-    const enc = encodingSel.value;
-    const text = await readFileAsText(file, enc);
+  function decodeFromBuffer(buf, encoding){
+    // SafariでTextDecoder('shift-jis')が効かない場合もあるので、readAsText優先ではなく
+    // 「読み込み時に取ったテキスト」ではなく「バイト列」から毎回デコードする。
+    // TextDecoder がダメなら例外になる → UIにエラー表示
+    const dec = new TextDecoder(encoding);
+    return dec.decode(buf);
+  }
 
-    const id = docIdFromFile(file);
-    state.lastDocId = id;
-
-    // タイトル推定（最初の数行から拾う：MVP）
+  function renderText(text){
     const headLines = String(text).replace(/\r\n/g,"\n").split("\n").slice(0,20).map(s=>s.trim()).filter(Boolean);
-    const title = headLines[0] || file.name;
+    const title = headLines[0] || (lastFileMeta?.name ?? "Untitled");
     const author = headLines[1] && headLines[1] !== title ? headLines[1] : "";
+
+    lastTitle = title;
+    refreshNowReading();
 
     const body = aozoraToHtml(String(text));
     paper.innerHTML = `
@@ -245,28 +323,99 @@
       <hr/>
       ${body}
     `;
+  }
 
-    // 前回位置へ復帰
-    const posKey = "aozora_reader_pos_" + id;
-    const raw = localStorage.getItem(posKey);
-    if(raw){
-      const ratio = parseFloat(raw);
-      if(!Number.isNaN(ratio)){
-        requestAnimationFrame(() => {
-          const max = scroller.scrollHeight - scroller.clientHeight;
-          scroller.scrollTop = Math.floor(max * clamp(ratio, 0, 1));
-        });
-      }
-    } else {
-      scroller.scrollTop = 0;
+  function showError(err){
+    paper.innerHTML = `<div class="empty">
+      <div style="font-weight:700;margin-bottom:6px;">読み込み失敗</div>
+      <div class="hint">①エンコーディングを切り替えてもう一度（Shift_JIS / UTF-8）</div>
+      <div class="hint">②「読み込みリセット」→ファイル選び直し</div>
+      <div class="hint" style="margin-top:10px;">詳細: ${escapeHtml(String(err))}</div>
+    </div>`;
+  }
+
+  async function openFile(file){
+    // バイト列として保持（後でエンコード変更できるように）
+    lastFileBuf = await file.arrayBuffer();
+    lastFileMeta = { name:file.name, size:file.size, lastModified:file.lastModified };
+    lastDocId = docIdFromMeta(lastFileMeta);
+
+    // まず現在の設定エンコードでデコード
+    try{
+      const text = decodeFromBuffer(lastFileBuf, encodingSel.value);
+      renderText(text);
+    }catch(err){
+      showError(err);
+      return;
     }
+
+    // 前回位置へ復帰（横書きのみ）
+    if(document.body.dataset.writing !== "vertical"){
+      const posKey = "bluesongs_reader_pos_" + lastDocId;
+      const raw = localStorage.getItem(posKey);
+      requestAnimationFrame(() => {
+        if(raw){
+          const ratio = parseFloat(raw);
+          if(!Number.isNaN(ratio)) setScrollRatio(ratio);
+          else scroller.scrollTop = 0;
+        } else {
+          scroller.scrollTop = 0;
+        }
+      });
+    } else {
+      // 縦書きは横スクロールなので、とりあえず先頭へ
+      scroller.scrollLeft = 0;
+    }
+
+    saveSettings();
+
+    // ★読書に集中：読み込み後は自動で設定を閉じる
+    controls.open = false;
+    updateOpenHint();
+  }
+
+  function rerenderWithCurrentEncoding(){
+    if(!lastFileBuf) return; // まだ何も読み込んでない
+    try{
+      const text = decodeFromBuffer(lastFileBuf, encodingSel.value);
+      renderText(text);
+      // 再デコードしたら先頭へ（文字化けを直す用途なので）
+      if(document.body.dataset.writing === "vertical"){
+        scroller.scrollLeft = 0;
+      } else {
+        scroller.scrollTop = 0;
+      }
+      saveSettings();
+    }catch(err){
+      showError(err);
+    }
+  }
+
+  function resetLoad(){
+    lastFileBuf = null;
+    lastFileMeta = null;
+    lastDocId = null;
+    lastTitle = null;
+    refreshNowReading();
+    fileInput.value = ""; // 同じファイルを選び直せるように
+    scroller.scrollTop = 0;
+    scroller.scrollLeft = 0;
+
+    paper.innerHTML = `
+      <div class="empty">
+        <div style="font-weight:700; margin-bottom:6px;">Bluesongs Reader</div>
+        <div>「設定」→ ファイルを選ぶと、青空文庫のルビ付きテキストを読書アプリっぽく読めるよ。</div>
+        <div style="margin-top:10px;" class="hint">ルビ記法例：｜漢字《かんじ》</div>
+      </div>
+    `;
     saveSettings();
   }
 
   // ---- controls
   el("smaller").onclick = () => { state.fontSize = clamp(state.fontSize - 1, 14, 30); setCssVars(); saveSettings(); };
   el("bigger").onclick  = () => { state.fontSize = clamp(state.fontSize + 1, 14, 30); setCssVars(); saveSettings(); };
-  el("lhDown").onclick  = () => { state.lineHeight = clamp((state.lineHeight - 0.1), 1.2, 2.6).toFixed(2); setCssVars(); saveSettings(); };
+
+  el("lhDown").onclick  = () => { state.lineHeight = clamp((parseFloat(state.lineHeight) - 0.1), 1.2, 2.6).toFixed(2); setCssVars(); saveSettings(); };
   el("lhUp").onclick    = () => { state.lineHeight = clamp((parseFloat(state.lineHeight) + 0.1), 1.2, 2.6).toFixed(2); setCssVars(); saveSettings(); };
 
   el("theme").onclick = () => {
@@ -276,42 +425,84 @@
   el("writing").onclick = () => {
     state.writing = (state.writing === "horizontal") ? "vertical" : "horizontal";
     applyWriting(); saveSettings();
+
+    // 縦横切り替え時は見失い防止で先頭へ
+    if(state.writing === "vertical"){
+      scroller.scrollLeft = 0;
+    } else {
+      scroller.scrollTop = 0;
+    }
   };
-  el("reset").onclick = () => {
-    state.theme = "light"; state.writing = "horizontal"; state.fontSize = 18; state.lineHeight = 1.9;
-    applyTheme(); applyWriting(); setCssVars(); saveSettings();
+
+  el("resetView").onclick = () => {
+    state.theme = "light";
+    state.writing = "horizontal";
+    state.fontSize = 18;
+    state.lineHeight = 1.9;
+    state.font = "mincho";
+    applyTheme();
+    applyWriting();
+    setCssVars();
+    fontSel.value = state.font;
+    saveSettings();
   };
+
+  el("resetLoad").onclick = () => resetLoad();
 
   fileInput.addEventListener("change", async (e) => {
     const file = e.target.files && e.target.files[0];
     if(!file) return;
-    try{
-      await openFile(file);
-    }catch(err){
-      paper.innerHTML = `<div class="empty">
-        <div style="font-weight:700;margin-bottom:6px;">読み込み失敗</div>
-        <div class="hint">Shift_JISが読めない環境かも。次を試してね：①エンコーディングをUTF-8にして再挑戦 ②ファイルをUTF-8へ変換してから読み込み</div>
-        <div class="hint" style="margin-top:10px;">詳細: ${escapeHtml(String(err))}</div>
-      </div>`;
-    }
+    await openFile(file);
   });
 
-  // 読書位置保存（スクロール比）
-  scroller.addEventListener("scroll", () => {
-    if(!state.lastDocId) return;
-    const max = scroller.scrollHeight - scroller.clientHeight;
-    const ratio = max > 0 ? (scroller.scrollTop / max) : 0;
-    const posKey = "aozora_reader_pos_" + state.lastDocId;
-    localStorage.setItem(posKey, String(clamp(ratio, 0, 1)));
-    state.lastScrollRatio = ratio;
+  // ★読み込み後もエンコード変更で「即再デコード」できる
+  encodingSel.addEventListener("change", () => {
+    state.encoding = encodingSel.value;
     saveSettings();
+    rerenderWithCurrentEncoding();
+  });
+
+  // フォント選択
+  fontSel.addEventListener("change", () => {
+    state.font = fontSel.value;
+    setCssVars();
+    saveSettings();
+  });
+
+  // 読書位置保存（横書き：縦スクロール比）
+  scroller.addEventListener("scroll", () => {
+    if(!lastDocId) return;
+    if(document.body.dataset.writing === "vertical") return; // 縦書きは今回は保存しない（要望があれば対応）
+    const ratio = getScrollRatio();
+    const posKey = "bluesongs_reader_pos_" + lastDocId;
+    localStorage.setItem(posKey, String(clamp(ratio, 0, 1)));
   }, { passive:true });
+
+  // 折りたたみ矢印
+  function updateOpenHint(){
+    openHint.textContent = controls.open ? "▲" : "▼";
+  }
+  controls.addEventListener("toggle", updateOpenHint);
 
   // init
   loadSettings();
   applyTheme();
-  applyWriting();
   setCssVars();
+  // 保存値があればそれを優先
+  encodingSel.value = state.encoding || "shift-jis";
+  fontSel.value = state.font || "mincho";
+  applyWriting();
+
+  refreshNowReading();
+  updateOpenHint();
+
+  // ★読書に集中：初期は閉じる
+  controls.open = false;
+
+  // 画面回転などで縦書き高さ再計算
+  window.addEventListener("resize", () => {
+    if(state.writing === "vertical") applyWriting();
+  });
 })();
 </script>
 </body>
