@@ -88,19 +88,18 @@
       padding:18px;
     }
 
-    /* 縦書き：横スクロールで列送りできるようにする */
+    /* 縦書き：横スクロールで列送り */
     [data-writing="vertical"] main{
       overflow-x: auto;
       overflow-y: hidden;
       padding: 18px 10px 24px 10px;
-      scroll-snap-type: x mandatory;      /* 列送りを“ページっぽく” */
+      scroll-snap-type: x mandatory;
       scroll-behavior: smooth;
     }
     [data-writing="vertical"] .paper{
       writing-mode: vertical-rl;
       text-orientation: mixed;
-      /* 重要：高さを画面に合わせる→下端で折り返して次の列へ */
-      height: calc(100vh - 64px); /* summary+paddingぶんの雑な見積もり。JSで後で微調整 */
+      height: calc(100vh - 64px); /* JSで微調整 */
       width: max-content;
       max-width: none;
       margin: 0;
@@ -110,6 +109,68 @@
       scroll-snap-align: start;
     }
     [data-writing="vertical"] p{margin: 0 0 1.2em 0;}
+
+    /* ページ表示HUD（常に控えめに表示） */
+    #pageHud{
+      position: fixed;
+      right: max(10px, env(safe-area-inset-right));
+      bottom: max(10px, env(safe-area-inset-bottom));
+      z-index: 30;
+      background: color-mix(in srgb, var(--bg) 82%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      user-select:none;
+      cursor:pointer;
+      opacity: 0.85;
+    }
+    #pageHud strong{ color: var(--fg); font-weight:700; }
+
+    /* スクラバー（スクロール中だけ表示） */
+    #scrubberWrap{
+      position: fixed;
+      left: max(12px, env(safe-area-inset-left));
+      right: max(12px, env(safe-area-inset-right));
+      bottom: calc(max(10px, env(safe-area-inset-bottom)) + 40px);
+      z-index: 29;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      display:none;
+    }
+    #scrubberTop{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:8px;
+      font-size:12px;
+      color:var(--muted);
+    }
+    #scrubberTop strong{ color:var(--fg); }
+    #scrubber{
+      width: 100%;
+      accent-color: currentColor;
+    }
+    #jumpRow{
+      display:flex;
+      gap:8px;
+      align-items:center;
+      justify-content:flex-end;
+      margin-top:8px;
+    }
+    #jumpRow button{
+      padding:6px 10px;
+      border-radius:10px;
+      font-size:12px;
+    }
   </style>
 </head>
 <body data-theme="light" data-writing="horizontal">
@@ -124,7 +185,6 @@
       <div class="group">
         <input id="file" type="file" accept=".txt,.text,.html,.htm" />
         <select id="encoding" title="文字コード">
-          <!-- 初期設定：Shift_JIS（valueは shift-jis が安定） -->
           <option value="shift-jis">Shift_JIS</option>
           <option value="utf-8">UTF-8</option>
         </select>
@@ -161,6 +221,23 @@
     </div>
   </main>
 
+  <!-- ページHUD & スクラバー -->
+  <div id="pageHud" title="タップでページ移動バー">
+    <strong id="pageNow">-</strong> / <span id="pageTotal">-</span>
+  </div>
+  <div id="scrubberWrap" aria-hidden="true">
+    <div id="scrubberTop">
+      <div>ページ <strong id="scrubberNow">-</strong> / <span id="scrubberTotal">-</span></div>
+      <div id="modeLabel">横書き</div>
+    </div>
+    <input id="scrubber" type="range" min="1" max="1" value="1" step="1" />
+    <div id="jumpRow">
+      <button id="jumpStart" type="button">先頭</button>
+      <button id="jumpEnd" type="button">末尾</button>
+      <button id="scrubberClose" type="button">閉じる</button>
+    </div>
+  </div>
+
 <script>
 (() => {
   const el = (id) => document.getElementById(id);
@@ -176,21 +253,40 @@
   const paper = el("paper");
   const scroller = el("scroller");
 
-  const settingsKey = "bluesongs_reader_settings_v3";
+  const pageHud = el("pageHud");
+  const pageNowEl = el("pageNow");
+  const pageTotalEl = el("pageTotal");
 
-  // ★読み込み済みのバイト列を保持（エンコード変更で再デコードできるように）
+  const scrubberWrap = el("scrubberWrap");
+  const scrubber = el("scrubber");
+  const scrubberNowEl = el("scrubberNow");
+  const scrubberTotalEl = el("scrubberTotal");
+  const modeLabel = el("modeLabel");
+  const scrubberClose = el("scrubberClose");
+  const jumpStart = el("jumpStart");
+  const jumpEnd = el("jumpEnd");
+
+  const settingsKey = "bluesongs_reader_settings_v4";
+
+  // 読み込み済みのバイト列（エンコード変更で再デコード）
   let lastFileBuf = null;     // ArrayBuffer
   let lastFileMeta = null;    // {name,size,lastModified}
   let lastDocId = null;
   let lastTitle = null;
+
+  // ページング（縦書き）
+  let vTotalPages = 1;
+  let vCurrentPage = 1;
+  let hideScrubberTimer = null;
+  let ignoreScrollOnce = false;
 
   const state = {
     theme: "light",
     writing: "horizontal",
     fontSize: 18,
     lineHeight: 1.9,
-    encoding: "shift-jis",   // ★初期：Shift_JIS
-    font: "mincho"           // ★初期：明朝
+    encoding: "shift-jis",
+    font: "mincho"
   };
 
   function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
@@ -201,7 +297,6 @@
     document.documentElement.style.setProperty("--fontSize", state.fontSize + "px");
     document.documentElement.style.setProperty("--lineHeight", state.lineHeight);
 
-    // フォント
     const stacks = {
       mincho: `"Hiragino Mincho ProN","YuMincho","Noto Serif JP","Hiragino Mincho Pro",serif`,
       gothic: `-apple-system, system-ui, "Hiragino Kaku Gothic ProN","Yu Gothic","Noto Sans JP",sans-serif`,
@@ -210,20 +305,11 @@
     document.documentElement.style.setProperty("--fontFamily", stacks[state.font] || stacks.mincho);
   }
   function applyTheme(){ document.body.dataset.theme = state.theme; }
-  function applyWriting(){
-    document.body.dataset.writing = state.writing;
-    // 縦書きの高さを、実際の設定バーの高さに合わせて調整（より“画面いっぱいで折り返し”）
-    if(state.writing === "vertical"){
-      requestAnimationFrame(() => {
-        const controlsH = controls.getBoundingClientRect().height;
-        const pad = 18; // main paddingの雰囲気分
-        const h = Math.max(240, window.innerHeight - controlsH - pad);
-        paper.style.height = h + "px";
-      });
-    } else {
-      paper.style.height = "";
-    }
+
+  function updateOpenHint(){
+    openHint.textContent = controls.open ? "▲" : "▼";
   }
+
   function saveSettings(){
     localStorage.setItem(settingsKey, JSON.stringify({
       theme: state.theme,
@@ -242,7 +328,6 @@
       if(!raw) return;
       const x = JSON.parse(raw);
       Object.assign(state, x);
-      // lastDocId/lastTitle は stateではなく外側で管理
       if(x.lastDocId) lastDocId = x.lastDocId;
       if(x.lastTitle) lastTitle = x.lastTitle;
     }catch(e){}
@@ -252,7 +337,7 @@
     nowReading.textContent = lastTitle ? lastTitle : "未読";
   }
 
-  // ---- Aozora txt -> HTML（最低限）
+  // ---- Aozora txt -> HTML
   function stripAozoraHeader(text){
     const lines = text.replace(/\r\n/g,"\n").split("\n");
     const ruleIdx = [];
@@ -270,17 +355,10 @@
     let t = stripAozoraHeader(txt);
     t = escapeHtml(t);
 
-    // 注記（※［＃...］）を軽く除去
     t = t.replace(/※［＃[^］]*］/g, "");
     t = t.replace(/［＃[^］]*］/g, "");
-
-    // 強調（《《強調》》）
     t = t.replace(/《《(.+?)》》/g, "<strong>$1</strong>");
-
-    // ルビ：｜基底《ルビ》
     t = t.replace(/｜([^《\n]+)《([^》\n]+)》/g, `<ruby><rb>$1</rb><rt>$2</rt></ruby>`);
-
-    // バー無し簡易：漢字列《よみ》
     t = t.replace(/([一-龥々〆ヵヶ]{1,20})《([^》\n]+)》/g, `<ruby><rb>$1</rb><rt>$2</rt></ruby>`);
 
     const blocks = t.split(/\n{2,}/).map(b => b.trim()).filter(Boolean);
@@ -291,19 +369,7 @@
     return `${meta.name}__${meta.size}__${meta.lastModified}`;
   }
 
-  function getScrollRatio(){
-    const max = scroller.scrollHeight - scroller.clientHeight;
-    return max > 0 ? (scroller.scrollTop / max) : 0;
-  }
-  function setScrollRatio(ratio){
-    const max = scroller.scrollHeight - scroller.clientHeight;
-    scroller.scrollTop = Math.floor(max * clamp(ratio, 0, 1));
-  }
-
   function decodeFromBuffer(buf, encoding){
-    // SafariでTextDecoder('shift-jis')が効かない場合もあるので、readAsText優先ではなく
-    // 「読み込み時に取ったテキスト」ではなく「バイト列」から毎回デコードする。
-    // TextDecoder がダメなら例外になる → UIにエラー表示
     const dec = new TextDecoder(encoding);
     return dec.decode(buf);
   }
@@ -334,13 +400,123 @@
     </div>`;
   }
 
+  // ---- ページ計算（横書き／縦書き 共通HUD）
+  function calcHorizontalProgress(){
+    // 縦スクロール比を “ページっぽく” に表示（100分割）
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    const ratio = max > 0 ? (scroller.scrollTop / max) : 0;
+    const total = 100;
+    const now = clamp(Math.round(ratio * (total - 1)) + 1, 1, total);
+    return { now, total };
+  }
+
+  function calcVerticalPages(){
+    const max = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+    const pageW = Math.max(1, scroller.clientWidth);
+    const total = Math.max(1, Math.floor(max / pageW) + 1);
+
+    // ★縦書き( vertical-rl )は、右端が先頭になりやすい（iOS/Safari）
+    // 先頭を「max」、進むほど scrollLeft が小さくなる想定でページ計算
+    const progress = clamp(max - scroller.scrollLeft, 0, max);
+    const now = clamp(Math.floor(progress / pageW) + 1, 1, total);
+    return { now, total, max, pageW };
+  }
+
+  function updateHudAndScrubber(){
+    if(document.body.dataset.writing === "vertical"){
+      const { now, total } = calcVerticalPages();
+      vCurrentPage = now;
+      vTotalPages = total;
+      pageNowEl.textContent = String(now);
+      pageTotalEl.textContent = String(total);
+
+      scrubber.max = String(total);
+      scrubber.value = String(now);
+      scrubberNowEl.textContent = String(now);
+      scrubberTotalEl.textContent = String(total);
+      modeLabel.textContent = "縦書き";
+    } else {
+      const { now, total } = calcHorizontalProgress();
+      pageNowEl.textContent = String(now);
+      pageTotalEl.textContent = String(total);
+
+      scrubber.max = String(total);
+      scrubber.value = String(now);
+      scrubberNowEl.textContent = String(now);
+      scrubberTotalEl.textContent = String(total);
+      modeLabel.textContent = "横書き";
+    }
+  }
+
+  function showScrubberTemporarily(){
+    scrubberWrap.style.display = "block";
+    scrubberWrap.setAttribute("aria-hidden", "false");
+    if(hideScrubberTimer) clearTimeout(hideScrubberTimer);
+    hideScrubberTimer = setTimeout(() => {
+      scrubberWrap.style.display = "none";
+      scrubberWrap.setAttribute("aria-hidden", "true");
+    }, 1200);
+  }
+
+  function hideScrubber(){
+    if(hideScrubberTimer) clearTimeout(hideScrubberTimer);
+    scrubberWrap.style.display = "none";
+    scrubberWrap.setAttribute("aria-hidden", "true");
+  }
+
+  function gotoVerticalPage(page){
+    const { total, max, pageW } = calcVerticalPages();
+    const p = clamp(page, 1, total);
+    // 右端=先頭（max）→ 進むほど左へ（scrollLeftが減る）
+    const target = clamp(max - (p - 1) * pageW, 0, max);
+    ignoreScrollOnce = true;
+    scroller.scrollLeft = target;
+    requestAnimationFrame(() => { ignoreScrollOnce = false; });
+  }
+
+  function gotoHorizontalPercentPage(page){
+    const total = 100;
+    const p = clamp(page, 1, total);
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const ratio = (p - 1) / (total - 1);
+    ignoreScrollOnce = true;
+    scroller.scrollTop = Math.floor(max * ratio);
+    requestAnimationFrame(() => { ignoreScrollOnce = false; });
+  }
+
+  // ---- 縦書き「先頭が最終ページになる」対策
+  function setVerticalToStart(){
+    const max = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+    // ★iOS/Safariは縦書きで右端が先頭になりがちなので max に合わせる
+    ignoreScrollOnce = true;
+    scroller.scrollLeft = max;
+    requestAnimationFrame(() => { ignoreScrollOnce = false; updateHudAndScrubber(); });
+  }
+
+  function applyWriting(){
+    document.body.dataset.writing = state.writing;
+
+    if(state.writing === "vertical"){
+      requestAnimationFrame(() => {
+        const controlsH = controls.getBoundingClientRect().height;
+        const pad = 18;
+        const h = Math.max(240, window.innerHeight - controlsH - pad);
+        paper.style.height = h + "px";
+
+        // ★切り替え直後に「最終ページへ飛ぶ」症状を抑止：描画が落ち着いたら必ず先頭へ
+        setTimeout(() => setVerticalToStart(), 0);
+      });
+    } else {
+      paper.style.height = "";
+    }
+    updateHudAndScrubber();
+  }
+
   async function openFile(file){
-    // バイト列として保持（後でエンコード変更できるように）
     lastFileBuf = await file.arrayBuffer();
     lastFileMeta = { name:file.name, size:file.size, lastModified:file.lastModified };
     lastDocId = docIdFromMeta(lastFileMeta);
 
-    // まず現在の設定エンコードでデコード
     try{
       const text = decodeFromBuffer(lastFileBuf, encodingSel.value);
       renderText(text);
@@ -349,43 +525,56 @@
       return;
     }
 
-    // 前回位置へ復帰（横書きのみ）
+    // 位置復帰
     if(document.body.dataset.writing !== "vertical"){
       const posKey = "bluesongs_reader_pos_" + lastDocId;
       const raw = localStorage.getItem(posKey);
       requestAnimationFrame(() => {
         if(raw){
           const ratio = parseFloat(raw);
-          if(!Number.isNaN(ratio)) setScrollRatio(ratio);
-          else scroller.scrollTop = 0;
+          if(!Number.isNaN(ratio)){
+            const max = scroller.scrollHeight - scroller.clientHeight;
+            scroller.scrollTop = Math.floor(max * clamp(ratio, 0, 1));
+          } else {
+            scroller.scrollTop = 0;
+          }
         } else {
           scroller.scrollTop = 0;
         }
+        updateHudAndScrubber();
       });
     } else {
-      // 縦書きは横スクロールなので、とりあえず先頭へ
-      scroller.scrollLeft = 0;
+      // 縦書きは「先頭（右端）」へ
+      requestAnimationFrame(() => setVerticalToStart());
+      // 縦書き位置を保存していたら復帰
+      const vKey = "bluesongs_reader_vpage_" + lastDocId;
+      const saved = localStorage.getItem(vKey);
+      if(saved){
+        const p = parseInt(saved, 10);
+        if(!Number.isNaN(p)){
+          requestAnimationFrame(() => gotoVerticalPage(p));
+        }
+      }
     }
 
     saveSettings();
 
-    // ★読書に集中：読み込み後は自動で設定を閉じる
     controls.open = false;
     updateOpenHint();
   }
 
   function rerenderWithCurrentEncoding(){
-    if(!lastFileBuf) return; // まだ何も読み込んでない
+    if(!lastFileBuf) return;
     try{
       const text = decodeFromBuffer(lastFileBuf, encodingSel.value);
       renderText(text);
-      // 再デコードしたら先頭へ（文字化けを直す用途なので）
       if(document.body.dataset.writing === "vertical"){
-        scroller.scrollLeft = 0;
+        setVerticalToStart();
       } else {
         scroller.scrollTop = 0;
       }
       saveSettings();
+      updateHudAndScrubber();
     }catch(err){
       showError(err);
     }
@@ -397,7 +586,7 @@
     lastDocId = null;
     lastTitle = null;
     refreshNowReading();
-    fileInput.value = ""; // 同じファイルを選び直せるように
+    fileInput.value = "";
     scroller.scrollTop = 0;
     scroller.scrollLeft = 0;
 
@@ -408,15 +597,16 @@
         <div style="margin-top:10px;" class="hint">ルビ記法例：｜漢字《かんじ》</div>
       </div>
     `;
+    updateHudAndScrubber();
     saveSettings();
   }
 
   // ---- controls
-  el("smaller").onclick = () => { state.fontSize = clamp(state.fontSize - 1, 14, 30); setCssVars(); saveSettings(); };
-  el("bigger").onclick  = () => { state.fontSize = clamp(state.fontSize + 1, 14, 30); setCssVars(); saveSettings(); };
+  el("smaller").onclick = () => { state.fontSize = clamp(state.fontSize - 1, 14, 30); setCssVars(); saveSettings(); applyWriting(); };
+  el("bigger").onclick  = () => { state.fontSize = clamp(state.fontSize + 1, 14, 30); setCssVars(); saveSettings(); applyWriting(); };
 
-  el("lhDown").onclick  = () => { state.lineHeight = clamp((parseFloat(state.lineHeight) - 0.1), 1.2, 2.6).toFixed(2); setCssVars(); saveSettings(); };
-  el("lhUp").onclick    = () => { state.lineHeight = clamp((parseFloat(state.lineHeight) + 0.1), 1.2, 2.6).toFixed(2); setCssVars(); saveSettings(); };
+  el("lhDown").onclick  = () => { state.lineHeight = clamp((parseFloat(state.lineHeight) - 0.1), 1.2, 2.6).toFixed(2); setCssVars(); saveSettings(); applyWriting(); };
+  el("lhUp").onclick    = () => { state.lineHeight = clamp((parseFloat(state.lineHeight) + 0.1), 1.2, 2.6).toFixed(2); setCssVars(); saveSettings(); applyWriting(); };
 
   el("theme").onclick = () => {
     state.theme = (state.theme === "light") ? "dark" : "light";
@@ -426,9 +616,9 @@
     state.writing = (state.writing === "horizontal") ? "vertical" : "horizontal";
     applyWriting(); saveSettings();
 
-    // 縦横切り替え時は見失い防止で先頭へ
+    // 見失い防止
     if(state.writing === "vertical"){
-      scroller.scrollLeft = 0;
+      setVerticalToStart();
     } else {
       scroller.scrollTop = 0;
     }
@@ -441,9 +631,9 @@
     state.lineHeight = 1.9;
     state.font = "mincho";
     applyTheme();
-    applyWriting();
     setCssVars();
     fontSel.value = state.font;
+    applyWriting();
     saveSettings();
   };
 
@@ -455,54 +645,99 @@
     await openFile(file);
   });
 
-  // ★読み込み後もエンコード変更で「即再デコード」できる
   encodingSel.addEventListener("change", () => {
     state.encoding = encodingSel.value;
     saveSettings();
     rerenderWithCurrentEncoding();
   });
 
-  // フォント選択
   fontSel.addEventListener("change", () => {
     state.font = fontSel.value;
     setCssVars();
     saveSettings();
+    applyWriting();
   });
 
-  // 読書位置保存（横書き：縦スクロール比）
+  // ---- HUD / Scrubber
+  pageHud.addEventListener("click", () => {
+    // クリックで開閉
+    const showing = scrubberWrap.style.display === "block";
+    if(showing) hideScrubber();
+    else {
+      updateHudAndScrubber();
+      scrubberWrap.style.display = "block";
+      scrubberWrap.setAttribute("aria-hidden", "false");
+    }
+  });
+
+  scrubber.addEventListener("input", () => {
+    const val = parseInt(scrubber.value, 10);
+    scrubberNowEl.textContent = String(val);
+    if(document.body.dataset.writing === "vertical"){
+      gotoVerticalPage(val);
+    } else {
+      gotoHorizontalPercentPage(val);
+    }
+  });
+
+  scrubberClose.addEventListener("click", () => hideScrubber());
+  jumpStart.addEventListener("click", () => {
+    if(document.body.dataset.writing === "vertical") gotoVerticalPage(1);
+    else gotoHorizontalPercentPage(1);
+    updateHudAndScrubber();
+  });
+  jumpEnd.addEventListener("click", () => {
+    if(document.body.dataset.writing === "vertical") gotoVerticalPage(vTotalPages);
+    else gotoHorizontalPercentPage(100);
+    updateHudAndScrubber();
+  });
+
+  // ---- scroll behavior
   scroller.addEventListener("scroll", () => {
+    if(ignoreScrollOnce) return;
+    updateHudAndScrubber();
+    showScrubberTemporarily();
+
+    // 位置保存：横書きは比率、縦書きはページ番号
     if(!lastDocId) return;
-    if(document.body.dataset.writing === "vertical") return; // 縦書きは今回は保存しない（要望があれば対応）
-    const ratio = getScrollRatio();
-    const posKey = "bluesongs_reader_pos_" + lastDocId;
-    localStorage.setItem(posKey, String(clamp(ratio, 0, 1)));
+
+    if(document.body.dataset.writing === "vertical"){
+      const { now } = calcVerticalPages();
+      const vKey = "bluesongs_reader_vpage_" + lastDocId;
+      localStorage.setItem(vKey, String(now));
+    } else {
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      const ratio = max > 0 ? (scroller.scrollTop / max) : 0;
+      const posKey = "bluesongs_reader_pos_" + lastDocId;
+      localStorage.setItem(posKey, String(clamp(ratio, 0, 1)));
+    }
   }, { passive:true });
 
   // 折りたたみ矢印
-  function updateOpenHint(){
-    openHint.textContent = controls.open ? "▲" : "▼";
-  }
   controls.addEventListener("toggle", updateOpenHint);
 
   // init
   loadSettings();
   applyTheme();
   setCssVars();
-  // 保存値があればそれを優先
+
   encodingSel.value = state.encoding || "shift-jis";
   fontSel.value = state.font || "mincho";
-  applyWriting();
 
+  applyWriting();
   refreshNowReading();
   updateOpenHint();
+  updateHudAndScrubber();
 
-  // ★読書に集中：初期は閉じる
   controls.open = false;
 
-  // 画面回転などで縦書き高さ再計算
   window.addEventListener("resize", () => {
-    if(state.writing === "vertical") applyWriting();
+    applyWriting();
+    updateHudAndScrubber();
   });
+
+  // 初期はスクラバー非表示
+  hideScrubber();
 })();
 </script>
 </body>
